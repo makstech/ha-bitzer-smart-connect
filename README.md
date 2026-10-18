@@ -14,7 +14,7 @@ Bring your <b>Ensy InoVent</b> heat-recovery ventilation — and other <b>Bitzer
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
-> ℹ️ **Unofficial** — an independent, community integration, not affiliated with or endorsed by BITZER, Lodam, or Ensy. It works by replaying the same calls the vendor's web app makes — a reverse-engineered client, not a documented API — so it can break if the platform changes. Use at your own risk.
+> ℹ️ **Unofficial** — an independent, community integration, not affiliated with or endorsed by BITZER, Lodam, or Ensy. It works by replaying the vendor mobile and web clients' cloud calls — a reverse-engineered client, not a documented API — so it can break if the platform changes. Use at your own risk.
 
 Sign in with your existing Bitzer Smart Connect account and your ventilation unit shows up in Home Assistant with live, native entities — ready for dashboards, history, and automations.
 
@@ -46,8 +46,13 @@ Click the badge above, or add it manually:
 
 ## ⚙️ Configuration
 
-1. Enter the **email and password** you use at [bitzersmartconnect.com](https://www.bitzersmartconnect.com).
-2. Pick your device from the list — or, if none appear, enter the device ID from the web app URL (the number after `/configurations/`).
+1. Enter your **Bitzer Smart Connect email and password**.
+2. Leave **Automatic** selected to try web login first, then mobile login if it fails. You can also force **Mobile app** or **Web** to use only that method.
+3. Pick your device from the list, or enter its numeric device ID if discovery is empty. Setup checks that its configuration can be read before adding it.
+
+Existing installations keep their web connection until changed. Open the integration entry's menu → **Reconfigure** to switch access mode without removing the device or its entities. Reauthentication also offers the mode selector. Automatic mode keeps using the successful method for token renewal, with the other method available if login later fails. It does not retry a failed or unconfirmed device write using another method.
+
+Mobile mode uses the mobile app's OAuth registration with authorization code + PKCE and refresh tokens. Home Assistant connects directly to Bitzer; your phone and the mobile app do not need to stay open.
 
 Add the integration again for each additional device.
 
@@ -68,10 +73,29 @@ Pull requests with new device profiles are very welcome. 🙌
 
 ## 🔧 How it works
 
-- **Sign-in** replays the web app's own login with your email and password to get the API session.
+- **Sign-in** uses the selected mobile or web OAuth client with your Bitzer account.
 - **Live updates** arrive over the platform's SignalR WebSocket — whether the change came from you, another app, or the unit itself — within a few seconds.
 - **Background refresh** re-reads the full parameter set on a gentle interval as a safety net, even while the live connection is healthy.
-- **Commands** are a single batched write to the same endpoint the web app uses, confirmed when the cloud echoes the change back.
+- **Mobile commands** use the cloud parameter API, one parameter at a time. Writes are serialized. Each request allows up to 75 seconds for the cloud response (the server can wait around 60 seconds for a gateway reply), followed by up to 20 seconds of reported-value checks per parameter. A timeout can mean the command is still pending; it does not roll back earlier parameters in a multi-parameter action.
+- **Web commands** retain the original batched configuration form endpoint.
+- **Mobile live updates** subscribe to device changes without holding a configuration view open.
+
+### Test cloud access locally
+
+With Python 3.12+ and `aiohttp` installed, run:
+
+```powershell
+python -m pip install aiohttp
+python scripts/check_mobile_connection.py
+```
+
+The script prompts for your email and hidden password, keeps credentials in memory, and checks login, discovery, and configuration reads. It defaults to Automatic; pass `--access-mode web` or `--access-mode mobile` to force one method. It does not change settings by default. To test a control change, specify one device and a supported parameter explicitly:
+
+```powershell
+python scripts/check_mobile_connection.py --device 1234 --set _USER.Control.TempSet=21.5
+```
+
+Use your own device ID and desired temperature; a successful write prints the confirmed readback. Mobile protocol details were identified by [ensy-homey](https://github.com/Gawdfrey/ensy-homey/blob/2e1f63f/lib/bitzer-client.ts).
 
 ## ⚠️ Limitations & privacy
 

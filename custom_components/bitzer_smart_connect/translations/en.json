@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Bitzer Smart Connect",
-        "description": "Sign in with your Bitzer Smart Connect account (the same email and password you use at bitzersmartconnect.com).",
+        "description": "Sign in with your Bitzer Smart Connect account. Automatic tries web login, then mobile login if needed. Select a forced mode to use only that method.",
         "data": {
           "username": "Email",
-          "password": "Password"
+          "password": "Password",
+          "access_mode": "Access mode"
         }
       },
       "device": {
@@ -22,10 +23,20 @@
       },
       "reauth_confirm": {
         "title": "Reauthenticate",
-        "description": "Your Bitzer Smart Connect session has expired. Sign in again to continue.",
+        "description": "Sign in with your Bitzer Smart Connect account. Automatic tries web login, then mobile login if needed. Select a forced mode to use only that method.",
         "data": {
           "username": "Email",
-          "password": "Password"
+          "password": "Password",
+          "access_mode": "Access mode"
+        }
+      },
+      "reconfigure": {
+        "title": "Change connection settings",
+        "description": "Sign in with your Bitzer Smart Connect account. Automatic tries web login, then mobile login if needed. Select a forced mode to use only that method.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "access_mode": "Access mode"
         }
       }
     },
@@ -35,7 +46,8 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "reauth_successful": "Reauthentication was successful."
+      "reauth_successful": "Reauthentication was successful.",
+      "reconfigure_successful": "Connection settings updated."
     }
   },
   "options": {

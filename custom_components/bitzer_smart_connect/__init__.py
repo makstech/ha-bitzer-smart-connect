@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME, Platform
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_USERNAME,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .api import BitzerAuth, BitzerClient, CannotConnect, InvalidAuth
-from .const import CONF_DEVICE_ID, CONF_DEVICE_NAME, DEFAULT_SCAN_INTERVAL
+from .const import (
+    ACCESS_WEB,
+    CONF_ACCESS_MODE,
+    CONF_DEVICE_ID,
+    CONF_DEVICE_NAME,
+    DEFAULT_SCAN_INTERVAL,
+)
 from .coordinator import BitzerConfigEntry, BitzerDeviceCoordinator, BitzerRuntimeData
 
 PLATFORMS: list[Platform] = [
@@ -22,7 +33,11 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: BitzerConfigEntry) -> bool:
     """Set up Bitzer Smart Connect from a config entry."""
-    auth = BitzerAuth(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
+    auth = BitzerAuth(
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        entry.data.get(CONF_ACCESS_MODE, ACCESS_WEB),
+    )
     try:
         await auth.async_login()
     except InvalidAuth as err:

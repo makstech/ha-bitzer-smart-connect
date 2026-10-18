@@ -12,7 +12,13 @@ from collections.abc import Awaitable, Callable
 
 import aiohttp
 
-from ..const import HUB_RECONNECT_MAX, HUB_RECONNECT_MIN, HUB_RX_TIMEOUT, SIGNALR_HUB
+from ..const import (
+    ACCESS_MOBILE,
+    HUB_RECONNECT_MAX,
+    HUB_RECONNECT_MIN,
+    HUB_RX_TIMEOUT,
+    SIGNALR_HUB,
+)
 from .auth import BitzerAuth
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,7 +34,9 @@ EventCallback = Callable[[str, list], Awaitable[None] | None]
 class BitzerHub:
     """Maintains a SignalR connection for one device and dispatches its events."""
 
-    def __init__(self, auth: BitzerAuth, device_id: int, on_event: EventCallback) -> None:
+    def __init__(
+        self, auth: BitzerAuth, device_id: int, on_event: EventCallback
+    ) -> None:
         self._auth = auth
         self._device_id = device_id
         self._on_event = on_event
@@ -98,9 +106,13 @@ class BitzerHub:
                     # The server pings ~every 16s; a longer silence means a half-open
                     # socket (no close frame), so time out and let _run reconnect.
                     try:
-                        msg = await asyncio.wait_for(ws.receive(), timeout=HUB_RX_TIMEOUT)
+                        msg = await asyncio.wait_for(
+                            ws.receive(), timeout=HUB_RX_TIMEOUT
+                        )
                     except asyncio.TimeoutError:
-                        _LOGGER.debug("hub: no frame for %ss, reconnecting", HUB_RX_TIMEOUT)
+                        _LOGGER.debug(
+                            "hub: no frame for %ss, reconnecting", HUB_RX_TIMEOUT
+                        )
                         break
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         await self._handle_text(msg.data)
@@ -120,6 +132,8 @@ class BitzerHub:
             headers={"Authorization": f"Bearer {token}"},
             allow_redirects=False,
         ) as resp:
+            if resp.status == 401 and self._auth.access_mode == ACCESS_MOBILE:
+                self._auth.invalidate_token()
             resp.raise_for_status()
             data = await resp.json()
         return data.get("connectionToken") or data["connectionId"]
@@ -137,6 +151,8 @@ class BitzerHub:
         # Mirror the official client's opening sequence (it calls both Subscribe casings).
         dev = self._device_id
         await self._invoke("Subscribe", [f"{dev}_Updates"])
+        if self._auth.access_mode == ACCESS_MOBILE:
+            return
         await self._invoke("subscribe", [f"{dev}_Updates"])
         await self._invoke("DeviceActivated", [str(dev)])
         await self._invoke("SetActiveViewString", [dev, "Configuration"])

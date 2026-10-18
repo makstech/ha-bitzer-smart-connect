@@ -15,7 +15,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import BitzerAuth, BitzerClient, BitzerHub, CannotConnect, InvalidAuth
 from .api.models import DeviceConfig, Parameter
-from .const import DEVICE_OFFLINE_GRACE, DOMAIN
+from .const import ACCESS_MOBILE, DEVICE_OFFLINE_GRACE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,11 @@ class BitzerDeviceCoordinator(DataUpdateCoordinator[dict[str, Parameter]]):
     async def _async_update_data(self) -> dict[str, Parameter]:
         try:
             config = await self.client.async_get_config(self.device_id)
-            online = await self.client.async_get_status(self.device_id)
+            online = (
+                config.online
+                if self.client.auth.access_mode == ACCESS_MOBILE
+                else await self.client.async_get_status(self.device_id)
+            )
         except InvalidAuth as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except CannotConnect as err:

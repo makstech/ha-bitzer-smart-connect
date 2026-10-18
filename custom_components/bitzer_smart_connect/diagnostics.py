@@ -22,6 +22,7 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry_data": async_redact_data(dict(entry.data), TO_REDACT),
         "entry_options": dict(entry.options),
+        "active_access_mode": entry.runtime_data.auth.access_mode,
         "device_id": coordinator.device_id,
         "device_name": coordinator.device_name,
         "device_online": coordinator.device_online,
