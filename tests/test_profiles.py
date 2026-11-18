@@ -14,7 +14,7 @@ def test_ensy_profile_limits():
     vent = param_limit(ENSY, "Control.VentSet")
     assert (vent.min, vent.max) == (1, 3)
     temp = param_limit(ENSY, "Control.TempSet")
-    assert (temp.min, temp.max, temp.step) == (10, 26, 0.5)
+    assert (temp.min, temp.max, temp.step) == (10, 26, 1)
 
 
 def test_ensy_fan_mode_labels():

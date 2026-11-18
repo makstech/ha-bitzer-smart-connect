@@ -12,10 +12,10 @@ API_BASE = "https://api.bitzersmartconnect.com/api"
 WWW_BASE = "https://www.bitzersmartconnect.com"
 SIGNALR_HUB = "https://api.bitzersmartconnect.com/signalr/deviceHub"
 
-# --- OIDC (IdentityServer) client used by the official SPA ---
-OIDC_CLIENT_ID = "BitzerIoC.SPA"
-OIDC_REDIRECT_URI = f"{WWW_BASE}/auth/callback/"
-OIDC_SCOPE = "openid profile email webapi_scope"
+# --- OIDC (IdentityServer) client used by the official mobile app: authorization code + PKCE ---
+OIDC_CLIENT_ID = "Bitzer.Balder.Code"
+OIDC_REDIRECT_URI = "de.bitzer.balder:/oauth2redirect"
+OIDC_SCOPE = "webapi_scope openid offline_access profile email balder_scope"
 
 # --- Config entry keys ---
 CONF_USERNAME = "username"

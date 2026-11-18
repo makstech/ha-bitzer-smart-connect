@@ -68,7 +68,7 @@ Pull requests with new device profiles are very welcome. 🙌
 
 ## 🔧 How it works
 
-- **Sign-in** replays the web app's own login with your email and password to get the API session.
+- **Sign-in** replays the mobile app's own login with your email and password to get the API session, so accounts without web access work too.
 - **Live updates** arrive over the platform's SignalR WebSocket — whether the change came from you, another app, or the unit itself — within a few seconds.
 - **Background refresh** re-reads the full parameter set on a gentle interval as a safety net, even while the live connection is healthy.
 - **Commands** are a single batched write to the same endpoint the web app uses, confirmed when the cloud echoes the change back.

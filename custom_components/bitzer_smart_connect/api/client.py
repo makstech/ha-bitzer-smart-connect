@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import urllib.parse
 
@@ -36,12 +37,19 @@ class BitzerClient:
         return [Boundary.from_json(b) for b in (data or [])]
 
     async def async_get_user_devices(self) -> list[Device]:
-        """List the account's devices via UserDevice/GetUserDevicesWithClaimTypes/<userId>.
+        """List the account's devices.
 
-        That payload carries device ids but not names (``device`` is null), so names are filled in
-        best-effort from each device's config snapshot; callers may still allow a manual device id.
+        Device/GetUserDevices carries names; the UserDevice/GetUserDevicesWithClaimTypes/<userId>
+        fallback only device ids, so callers may still allow a manual device id.
         """
         await self._auth.async_access_token()
+        try:
+            data = await self._get_json(f"{API_BASE}/Device/GetUserDevices")
+        except CannotConnect:
+            data = None
+        devices = [Device.from_json(d) for d in data or [] if isinstance(d, dict)]
+        if devices:
+            return devices
         uid = self._auth.user_id
         if not uid:
             return []
@@ -62,9 +70,7 @@ class BitzerClient:
     async def async_get_config(self, device_id: int) -> DeviceConfig:
         """One configuration snapshot: parameter schema + current values (www, Bearer-authed)."""
         url = f"{WWW_BASE}/Configurations/AsJSON/?deviceId={device_id}&_=0"
-        headers = await self._auth.async_bearer_headers()
-        headers["X-Requested-With"] = "XMLHttpRequest"
-        data = await self._get_json(url, headers=headers)
+        data = await self._get_json(url, headers={"X-Requested-With": "XMLHttpRequest"})
         return DeviceConfig.from_json(data or {})
 
     async def async_get_status(self, device_id: int) -> bool:
@@ -121,31 +127,27 @@ class BitzerClient:
 
     # -- low level --------------------------------------------------------------
 
-    async def _get_json(self, url: str, headers: dict | None = None):
-        if headers is None:
-            headers = await self._auth.async_bearer_headers()
-        headers.setdefault("Accept", "application/json")
+    async def _get_json(self, url: str, headers: dict[str, str] | None = None):
+        """Bearer-authed GET; a rejected token is renewed once."""
+        path = urllib.parse.urlsplit(url).path
+
+        async def send() -> tuple[int, str]:
+            bearer = await self._auth.async_bearer_headers()
+            try:
+                async with self._auth.session.get(
+                    url, headers={"Accept": "application/json", **(headers or {}), **bearer}, allow_redirects=False
+                ) as resp:
+                    return resp.status, await resp.text()
+            except (aiohttp.ClientError, TimeoutError) as err:
+                raise CannotConnect(f"{path}: {err}") from err
+
+        status, text = await send()
+        if status == 401:
+            self._auth.invalidate_token()
+            status, text = await send()
+        if status >= 300:
+            raise CannotConnect(f"{path} -> {status}")
         try:
-            async with self._auth.session.get(
-                url, headers=headers, allow_redirects=False
-            ) as resp:
-                if resp.status in (301, 302, 303, 307, 308):
-                    raise CannotConnect(f"{url} -> {resp.status} (auth?)")
-                if resp.status == 401:
-                    raise CannotConnect(f"{url} -> 401")
-                resp.raise_for_status()
-                text = await resp.text()
-                if not text:
-                    return None
-                try:
-                    return _loads(text)
-                except ValueError as err:
-                    raise CannotConnect(f"{url}: bad JSON") from err
-        except aiohttp.ClientError as err:
-            raise CannotConnect(str(err)) from err
-
-
-def _loads(text: str):
-    import json
-
-    return json.loads(text)
+            return json.loads(text) if text else None
+        except ValueError as err:
+            raise CannotConnect(f"{path}: bad JSON") from err

@@ -33,7 +33,7 @@ PRODUCT_PROFILES: dict[str, ProductProfile] = {
         model="Ensy InoVent",
         limits={
             "Control.VentSet": Limit(min=1, max=3),  # 1..3 ventilation steps; no off, no step 4
-            "Control.TempSet": Limit(min=10, max=26, step=0.5),
+            "Control.TempSet": Limit(min=10, max=26, step=1),  # the unit drops half degrees
         },
         fan_modes={1: "low", 2: "medium", 3: "high"},
     ),
