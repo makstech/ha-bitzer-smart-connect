@@ -18,7 +18,6 @@ import homeassistant.helpers.config_validation as cv
 from .api import BitzerAuth, BitzerClient, CannotConnect, InvalidAuth
 from .api.models import Device
 from .const import (
-    CONF_BOUNDARY_ID,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
     CONF_EXPOSE_ALL,
@@ -66,8 +65,7 @@ class BitzerConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._creds = dict(user_input)
                 self._auth = auth
                 if len(self._devices) == 1:
-                    device = self._devices[0]
-                    return await self._create_entry(device.id, device.name)
+                    return await self.async_step_device({CONF_DEVICE_ID: self._devices[0].id})
                 return await self.async_step_device()
             await auth.async_close()
         return self.async_show_form(
@@ -78,12 +76,19 @@ class BitzerConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Pick a device from the discovered list, or enter an id if discovery came back empty."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             device_id = int(user_input[CONF_DEVICE_ID])
             name = user_input.get(CONF_DEVICE_NAME) or next(
                 (d.name for d in self._devices if d.id == device_id), f"Device {device_id}"
             )
-            return await self._create_entry(device_id, name)
+            try:
+                config = await BitzerClient(self._auth).async_get_config(device_id)
+            except CannotConnect:
+                config = None
+            if config and config.parameters:
+                return await self._create_entry(device_id, name)
+            errors["base"] = "device_unreadable"
 
         if self._devices:
             schema = vol.Schema(
@@ -96,13 +101,13 @@ class BitzerConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_DEVICE_NAME): str,
                 }
             )
-        return self.async_show_form(step_id="device", data_schema=schema)
+        return self.async_show_form(step_id="device", data_schema=schema, errors=errors)
 
     async def _create_entry(self, device_id: int, name: str) -> ConfigFlowResult:
-        await self.async_set_unique_id(str(device_id))
-        self._abort_if_unique_id_configured()
         if self._auth is not None:
             await self._auth.async_close()
+        await self.async_set_unique_id(str(device_id))
+        self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=name,
             data={**self._creds, CONF_DEVICE_ID: device_id, CONF_DEVICE_NAME: name},

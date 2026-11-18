@@ -31,7 +31,8 @@
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
-      "cannot_connect": "Could not connect to Bitzer Smart Connect."
+      "cannot_connect": "Could not connect to Bitzer Smart Connect.",
+      "device_unreadable": "Could not read this device's configuration. Check the device ID and that your account has access to it."
     },
     "abort": {
       "already_configured": "This device is already configured.",

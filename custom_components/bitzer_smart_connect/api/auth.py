@@ -1,12 +1,15 @@
 """Headless OIDC login for Bitzer Smart Connect.
 
-Yields the SPA's bearer access token plus the www app's cookie session (silent authorization_code flow).
+Signs in as the mobile app's client (authorization code + PKCE, renewed by refresh token); yields its
+bearer access token plus the www app's cookie session (silent authorization_code flow).
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import hashlib
 import html as html_lib
 import json
 import logging
@@ -18,7 +21,6 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 
 from ..const import (
-    API_BASE,
     HTTP_TIMEOUT,
     LOGIN_BASE,
     OIDC_CLIENT_ID,
@@ -60,6 +62,8 @@ class BitzerAuth:
             headers={"User-Agent": "ha-bitzer-smart-connect"},
         )
         self._token: Token | None = None
+        self._refresh_token: str | None = None
+        self._lock = asyncio.Lock()  # one renewal at a time: a refresh token is single-use
         self._www_ready = False
 
     @property
@@ -72,18 +76,22 @@ class BitzerAuth:
     # -- public -----------------------------------------------------------------
 
     async def async_login(self) -> Token:
-        """Run the implicit flow and store a fresh access token."""
-        self._token = await self._implicit_login()
-        self._www_ready = False  # a fresh token means the www session must be re-established
-        return self._token
+        """Log in with the credentials and store a fresh access token."""
+        async with self._lock:
+            return await self._login()
 
     async def async_access_token(self) -> str:
-        """Return a valid Bearer token, re-logging in if needed."""
-        now = datetime.now(timezone.utc)
-        if self._token is None or not self._token.is_valid(now):
-            await self.async_login()
+        """Return a valid Bearer token, renewing it if needed."""
+        async with self._lock:
+            expired = self._token is None or not self._token.is_valid(datetime.now(timezone.utc))
+            if expired and not await self._refresh():
+                await self._login()
         assert self._token is not None
         return self._token.access_token
+
+    def invalidate_token(self) -> None:
+        """Drop a token the API rejected, so the next request renews it."""
+        self._token = None
 
     async def async_bearer_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {await self.async_access_token()}"}
@@ -124,42 +132,52 @@ class BitzerAuth:
     def invalidate_www_session(self) -> None:
         self._www_ready = False
 
-    # -- implicit login ---------------------------------------------------------
+    # -- login ------------------------------------------------------------------
 
-    async def _implicit_login(self) -> Token:
-        state, nonce = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
+    async def _login(self) -> Token:
+        """Authorization code + PKCE, submitting the credentials when the IdP asks for them."""
+        self._www_ready = False  # a fresh token means the www session must be re-established
+        verifier, challenge = _pkce_pair()
+        state = secrets.token_urlsafe(16)
         q = urllib.parse.urlencode(
             {
                 "client_id": OIDC_CLIENT_ID,
                 "redirect_uri": OIDC_REDIRECT_URI,
-                "response_type": "id_token token",
+                "response_type": "code",
                 "scope": OIDC_SCOPE,
                 "state": state,
-                "nonce": nonce,
-                "response_mode": "fragment",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
             }
         )
-        # 1) authorize -> a token fragment when the SSO session is still valid (silent refresh),
-        #    else the login page. IdentityServer may bounce through /connect/authorize/callback first,
-        #    and the fragment leads with id_token, so follow redirects and match order-independently.
         url = f"{LOGIN_BASE}/connect/authorize?{q}"
-        login_url = None
-        for _ in range(8):
-            status, headers, _ = await self._raw("GET", url)
-            loc = headers.get("Location", "")
-            if status == 302 and _has_token_fragment(loc):
-                return _token_from_fragment(loc)
-            if status != 302 or not loc:
+        submitted = False
+        for _ in range(12):
+            if url.startswith(OIDC_REDIRECT_URI):
+                granted = await self._token_grant(
+                    {
+                        "grant_type": "authorization_code",
+                        "code": _code_from_redirect(url, state),
+                        "redirect_uri": OIDC_REDIRECT_URI,
+                        "code_verifier": verifier,
+                    }
+                )
+                if not granted:
+                    raise CannotConnect("authorization code rejected")
+                return self._token
+            status, headers, body = await self._raw("GET", url)
+            if status == 200 and _is_login_page(url) and not submitted:
+                loc = await self._submit_credentials(url, body)
+                submitted = True
+            else:
+                loc = headers.get("Location", "")
+            if not loc:
                 raise CannotConnect(f"unexpected authorize response {status}")
-            if "/account/login" in loc.lower():
-                login_url = _abs(url, loc)
-                break
             url = _abs(url, loc)
-        if login_url is None:
-            raise CannotConnect("authorize did not resolve to a token or login page")
+        raise CannotConnect("authorize did not resolve to a code")
 
-        # 2) login form
-        html = await self._text("GET", login_url)
+    async def _submit_credentials(self, login_url: str, html: str) -> str:
+        """POST the login form; returns the redirect that continues the flow."""
         form = _scrape_login_form(html)
         m = _TOKEN_RE.search(html)
         if not m:
@@ -172,7 +190,6 @@ class BitzerAuth:
         form["ClientTimezoneOffsetMinutes"] = off_min
         form["ClientTimeZoneOffset"] = off_enc
 
-        # 3) submit credentials
         status, headers, body = await self._raw(
             "POST",
             login_url,
@@ -184,27 +201,53 @@ class BitzerAuth:
             if "invalid" in low or ("password" in low and "error" in low):
                 raise InvalidAuth("credentials rejected")
             raise CannotConnect(f"login POST returned {status}")
-        authf = _abs(login_url, headers.get("Location", ""))
+        return headers.get("Location", "")
 
-        # 4) authorize (authenticated) -> token fragment
-        status, headers, _ = await self._raw("GET", authf)
-        loc = headers.get("Location", "")
-        if status == 302 and "#" not in loc and loc:
-            status, headers, _ = await self._raw("GET", _abs(authf, loc))
-            loc = headers.get("Location", "")
-        if "access_token" not in loc:
-            raise CannotConnect("no token in final redirect")
-        return _token_from_fragment(loc)
+    async def _refresh(self) -> bool:
+        """Renew the token with the refresh token; False once the IdP no longer accepts it."""
+        if self._refresh_token is None:
+            return False
+        if await self._token_grant({"grant_type": "refresh_token", "refresh_token": self._refresh_token}):
+            return True
+        self._refresh_token = None
+        return False
+
+    async def _token_grant(self, grant: dict[str, str]) -> bool:
+        """Exchange a grant for tokens and store them; False when the IdP rejects the grant."""
+        status, _, body = await self._raw(
+            "POST", f"{LOGIN_BASE}/connect/token", data={**grant, "client_id": OIDC_CLIENT_ID}
+        )
+        if status in (400, 401):
+            return False
+        if status != 200:
+            raise CannotConnect(f"token endpoint returned {status}")
+        try:
+            data = json.loads(body)
+            self._token = Token(
+                access_token=data["access_token"],
+                id_token=data.get("id_token", ""),
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in", 3600))),
+            )
+        except (ValueError, KeyError, TypeError) as err:
+            raise CannotConnect("invalid token response") from err
+        self._refresh_token = data.get("refresh_token") or self._refresh_token
+        return True
 
     # -- www code flow ----------------------------------------------------------
 
     async def _establish_www_session(self) -> None:
         cur = f"{WWW_BASE}/Configurations?deviceId=0"
+        resubmitted = False
         for _ in range(12):
             status, headers, body = await self._raw("GET", cur)
             loc = headers.get("Location", "")
             if status in _REDIRECT_CODES and loc:
                 cur = _abs(cur, loc)
+                continue
+            if status == 200 and _is_login_page(cur) and not resubmitted:
+                # a refresh-token grant renews the bearer but not the IdP's SSO cookie
+                cur = _abs(cur, await self._submit_credentials(cur, body))
+                resubmitted = True
                 continue
             if status == 200:
                 fm = re.search(
@@ -239,7 +282,7 @@ class BitzerAuth:
             ) as resp:
                 text = await resp.text()
                 return resp.status, resp.headers, text
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise CannotConnect(str(err)) from err
 
     async def _text(self, method: str, url: str, **kw) -> str:
@@ -271,19 +314,23 @@ def _form_inputs(form_html: str) -> dict[str, str]:
     return out
 
 
-def _has_token_fragment(loc: str) -> bool:
-    """True when a redirect Location carries an access token in its URL fragment."""
-    return "#" in loc and "access_token=" in loc.split("#", 1)[1]
+def _is_login_page(url: str) -> bool:
+    """The IdP's own login page: the only place the credentials may be posted."""
+    return url.startswith(f"{LOGIN_BASE}/") and "/account/login" in urllib.parse.urlsplit(url).path.lower()
 
 
-def _token_from_fragment(loc: str) -> Token:
-    frag = dict(urllib.parse.parse_qsl(loc.split("#", 1)[1]))
-    expires_in = int(frag.get("expires_in", "3600"))
-    return Token(
-        access_token=frag["access_token"],
-        id_token=frag.get("id_token", ""),
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
-    )
+def _pkce_pair() -> tuple[str, str]:
+    """A PKCE code verifier and its S256 challenge."""
+    verifier = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return verifier, base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _code_from_redirect(url: str, state: str) -> str:
+    params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+    if params.get("state") != state or "code" not in params:
+        raise CannotConnect("authorization was not granted")
+    return params["code"]
 
 
 def _tz_fields() -> tuple[str, str]:
